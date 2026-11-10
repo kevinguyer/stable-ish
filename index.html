@@ -7,6 +7,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Stable-ish">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Stable-ish</title>
 <style>
 :root{
@@ -58,6 +61,7 @@ button.small{min-height:34px;padding:0 10px;border-radius:9px;font-size:13px}
 #life{margin-top:6px;display:flex;flex-wrap:wrap;justify-content:center;gap:5px;font-size:12px}
 #life span{background:rgba(95,227,161,.14);border:1px solid rgba(95,227,161,.35);border-radius:9px;padding:1px 7px}
 .toast.good b{color:var(--hz)}
+.toast.cool b{color:#9fe8ff}
 @media (max-height:620px){ .toast:nth-child(n+2){display:none} }
 #toasts{margin-top:8px;display:flex;flex-direction:column;align-items:center;gap:5px}
 .toast{background:rgba(10,14,30,.85);border:1px solid var(--line);border-radius:10px;
@@ -190,6 +194,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)
     <p><b>Drag back from a planet</b>, like a slingshot, to fling it onto a different orbit. The dotted line is its predicted path. It ignores the other planets, so it is often wrong.</p>
     <p><b>Launch</b> to run 10,000 years. <b style="color:var(--hz)">Harmony</b> rewards survivors, time in the green habitable zone and orbital rhythms. <b style="color:var(--may)">Mayhem</b> rewards ejections, collisions and planets fed to the star.</p>
     <p>A rocky or ocean world that <b>stays</b> in the green zone grows life: microbes, plants, animals, cities, then radio signals. Short trips outside are survivable; leaving for long wipes it out.</p>
+    <p>Select a planet to see its dashed <b>rhythm rings</b>. A new planet dropped on one snaps into a 2:1 or 3:2 orbit with it, which earns a Harmony bonus if it holds.</p>
     <p>Bigger planets score more and bully their neighbours.</p>
     <p>Every planet plays a note set by its orbit. Orbits in a simple rhythm, like 2:1 or 3:2, sound in tune.</p>
     <p class="about"><b>About.</b> Stable-ish is a game created by Kevin Guyer, yeah, <i>that</i> Kevin Guyer. <a href="https://kevinguyer.com" target="_blank" rel="noopener">kevinguyer.com</a></p>
@@ -204,9 +209,10 @@ const TAU = Math.PI * 2;
 const GM = 4 * Math.PI * Math.PI;      // AU^3 / yr^2 with a 1-solar-mass star
 const KMS = 4.74;                      // 1 AU/yr in km/s
 const T_END = 10000;
-const FIELD_IN = 0.35, FIELD_OUT = 4.5;
+const FIELD_IN = 0.35;
+let FIELD_OUT = 4.5;                   // per scenario
 let viewR = 4.9;
-const HZ_IN = 1.2, HZ_OUT = 2.0;
+let HZ_IN = 1.2, HZ_OUT = 2.0;         // per scenario
 const STAR_R = 0.12, EJ_R = 8, FAR_R = 120;
 const ETA = 0.08, DT_MIN = 1e-4, DT_MAX = 0.05, EPS2 = 4e-6, NEAR2 = 0.64;
 const MAX_PLANETS = 10, MAXN = 14, TB = 256;
@@ -220,7 +226,17 @@ const TYPES = {
   gas:   {label:'Gas giant', m:1e-2, cost:7, pts:400, cr:0.018, px:10.5, hue:38,  sat:86, lum:64, life:0},
   dwarf: {label:'Red dwarf',  m:0.05, cost:0, pts:0, cr:0.05, px:6, hue:8,  sat:95, lum:62, life:0, star:true},
   rogue: {label:'Rogue star', m:0.25, cost:0, pts:0, cr:0.08, px:8, hue:48, sat:95, lum:72, life:0, star:true},
+  visitor: {label:'interstellar object', m:0, cost:0, pts:0, cr:0.002, px:3, hue:192, sat:70, lum:84, life:0, visitor:true},
 };
+// A rare interstellar visitor. It is simulated beside the planets, not among them: everything pulls on it
+// and it pulls on nothing, so scores are identical whether or not one turns up. That keeps the daily fair.
+let visitorChance = 0.08;             // chance per run
+const VISITOR_EXITS = [
+  '<b>The visitor</b> left the way it came: fast',
+  '<b>The visitor</b> is gone. It sped up a little on the way out. Probably outgassing.',
+  '<b>The visitor</b> moved on without a word',
+  '<b>The visitor</b> is gone. Nobody got a good look at it.',
+];
 const PLAYER_TYPES = ['rocky', 'ocean', 'ice', 'gas'];
 const SCENARIOS = [
   {id:'free', name:'Open sky', budget:20,
@@ -235,6 +251,20 @@ const SCENARIOS = [
     blurb:'Rocky and ocean worlds only, 12 mass points. Habitable-zone points are doubled.'},
   {id:'heavy', name:'Heavyweights', budget:30, types:['ice', 'gas'],
     blurb:'Ice and gas giants only, 30 mass points. See how many giants one star can hold.'},
+  {id:'small', name:'Small sun', budget:16, hz:[0.5, 0.9], fieldOut:2.8, viewR:3.1,
+    blurb:'A dim star. The habitable zone hugs it at 0.5 to 0.9 AU, where orbits are fast and neighbours are close. Nothing can be placed beyond 2.8 AU.'},
+  {id:'big', name:'Big sun', budget:20, hz:[2.7, 3.8],
+    blurb:'A bright star. The habitable zone sits far out at 2.7 to 3.8 AU, right where giants like to live.'},
+  {id:'close', name:'Close quarters', budget:16, fieldOut:2.4, viewR:2.7,
+    blurb:'Nothing can be placed beyond 2.4 AU. 16 mass points and very little room.'},
+  {id:'gauntlet', name:'The Gauntlet', budget:12,
+    fixed:[{type:'gas', name:'Goliath', peri:0.55, apo:0.55, ang:1.0}, {type:'gas', name:'Bertha', peri:3.7, apo:3.7, ang:4.0}],
+    blurb:'Two locked gas giants, one hugging the star and one at 3.7 AU. Thread your planets between them.'},
+  {id:'wrongway', name:'Wrong way', budget:14, fixed:[{type:'gas', name:'Wanda', peri:1.7, apo:3.6, ang:2.6, retro:true}],
+    blurb:'Wanda, a gas giant, orbits backwards on a path that cuts through the system. Getting rid of her pays double in Mayhem.'},
+  {id:'gallery', name:'Shooting gallery', budget:20,
+    rogues:[{t:2490, q:4.2, vinf:1.6, ang:0.4}, {t:4990, q:3.3, vinf:1.4, ang:2.7}, {t:7490, q:3.8, vinf:1.9, ang:4.6}],
+    blurb:'Three rogue stars pass through, around years 2,500, 5,000 and 7,500. Their paths are the dotted lines.'},
 ];
 const NAMES_SMALL = ['Pebble','Dottie','Pip','Biscuit','Marble','Olive','Tilly','Nib','Sprout','Mabel','Fig','Wren','Clover','Pim','Moss','Bean','Poppy','Skip','Nell','Tuck'];
 const NAMES_BIG = ['Big Jim','Bertha','Gus','Mungo','Otto','Brutus','Hilda','Magnus','Bruno','Tank','Boris','Agnes'];
@@ -249,7 +279,7 @@ const store = {
 
 // ---------- state ----------
 let mode = 'build';                    // build | run | done
-let design = [], fixed = [], rogue = null, sc = null;
+let design = [], fixed = [], rogues = [], sc = null;
 let selected = null, curType = 'rocky', drag = null;
 let best = store.get('best', {});
 if (typeof best.h === 'number') best = {free: best};
@@ -284,16 +314,47 @@ function elements(x, y, vx, vy){
   return {r, E, h, e, ex, ey, a,
     peri: E < 0 ? a*(1-e) : (h*h/GM)/(1+e), apo: E < 0 ? a*(1+e) : Infinity};
 }
+// Guide rings: where a circular orbit would keep a 2:1 or 3:2 rhythm with the anchor planet.
+const RING_RATIOS = [[2, '2:1'], [0.5, '2:1'], [1.5, '3:2'], [2 / 3, '3:2']];
+function ringAnchor(){
+  const a = drag ? (drag.kind === 'place' ? drag.anchor : null) : selected;
+  return a && !a.locked && design.includes(a) ? a : null;
+}
+function guideRings(anchor){
+  if (!anchor) return [];
+  const el = elements(anchor.x, anchor.y, anchor.vx, anchor.vy);
+  if (el.E >= 0) return [];
+  return RING_RATIOS.map(([k, label]) => ({r: el.a * Math.pow(k, 2 / 3), label}))
+    .filter(g => g.r >= FIELD_IN && g.r <= FIELD_OUT);
+}
+function snapToRing(x, y, anchor){
+  const r = Math.hypot(x, y);
+  for (const g of guideRings(anchor)) if (Math.abs(r - g.r) * scale < 8) return [x / r * g.r, y / r * g.r];
+  return [x, y];
+}
+function rhythmWith(p){                 // the same test the scoring uses, against the other planets as placed
+  const el = elements(p.x, p.y, p.vx, p.vy);
+  if (el.E >= 0 || p.locked) return '';
+  const hits = [];
+  for (const o of design){
+    if (o === p) continue;
+    const eo = elements(o.x, o.y, o.vx, o.vy);
+    if (eo.E >= 0) continue;
+    const ratio = Math.pow(Math.max(el.a, eo.a) / Math.min(el.a, eo.a), 1.5);
+    for (const [a, b] of RESONANCES) if (inRhythm(ratio, a / b)) hits.push(`${a}:${b} with ${o.name}`);
+  }
+  return hits.length ? ` · <span class="ok">rhythm ${hits.join(', ')}</span>` : '';
+}
 function budgetUsed(){ return design.reduce((s, p) => s + TYPES[p.type].cost, 0); }
-function orbitBody(type, name, peri, apo, ang){      // starts at its farthest point
-  const a = (peri + apo) / 2, r = apo, v = Math.sqrt(GM * (2/r - 1/a));
+function orbitBody(type, name, peri, apo, ang, retro){   // starts at its farthest point
+  const a = (peri + apo) / 2, r = apo, v = Math.sqrt(GM * (2/r - 1/a)) * (retro ? -1 : 1);
   const x = r*Math.cos(ang), y = r*Math.sin(ang);
   return tint({type, name, hue:0, x, y, vx: v*y/r, vy: -v*x/r, locked:true});
 }
-function rogueBody(q, vinf, ang){                    // hyperbolic pass with closest approach q
+function rogueBody(q, vinf, ang, name, type){                   // hyperbolic pass with closest approach q
   const r0 = 40, h = q * Math.sqrt(vinf*vinf + 2*GM/q), v0 = Math.sqrt(vinf*vinf + 2*GM/r0);
   const vt = h / r0, vr = -Math.sqrt(v0*v0 - vt*vt), c = Math.cos(ang), s = Math.sin(ang);
-  return tint({type:'rogue', name:'Nemesis', hue:0, x:r0*c, y:r0*s, vx: vr*c + vt*s, vy: vr*s - vt*c, locked:true});
+  return tint({type: type || 'rogue', name, hue:0, x:r0*c, y:r0*s, vx: vr*c + vt*s, vy: vr*s - vt*c, locked:true});
 }
 // ---------- daily challenge: the same generated scenario for everyone on a given date ----------
 function seededRng(str){
@@ -364,8 +425,11 @@ function loadScenario(id){
       if (k.startsWith('stableish.design.daily:') && k !== 'stableish.design.' + dailyScenario().id) localStorage.removeItem(k);
   } catch (e) {}
   viewR = sc.viewR || 4.9;
-  fixed = (sc.fixed || []).map(f => orbitBody(f.type, f.name, f.peri, f.apo, f.ang));
-  rogue = sc.rogue ? rogueBody(sc.rogue.q, sc.rogue.vinf, sc.rogue.ang) : null;
+  FIELD_OUT = sc.fieldOut || 4.5;
+  [HZ_IN, HZ_OUT] = sc.hz || [1.2, 2.0];
+  fixed = (sc.fixed || []).map(f => orbitBody(f.type, f.name, f.peri, f.apo, f.ang, f.retro));
+  rogues = (sc.rogues || (sc.rogue ? [sc.rogue] : [])).map((r, i) =>
+    ({t: r.t, body: rogueBody(r.q, r.vinf, r.ang, ['Nemesis', 'Tyche', 'Wormwood'][i % 3])}));
   const types = sc.types || PLAYER_TYPES;
   design = store.get('design.' + sc.id, []).filter(p => types.includes(p.type)).map(tint);
   if (!types.includes(curType)) curType = types[0];
@@ -404,9 +468,11 @@ function simInit(src, rec){
   S.pl = src.map((d, i) => mkRun(d, i, rec));
   S.all = S.pl.slice();
   S.placed = S.live = S.pl.filter(p => !p.locked).length;
-  S.rogueAt = rogue ? sc.rogue.t : Infinity; S.rogue = null; S.rogueT = -1e9;
+  S.rogueIdx = 0; S.rogueAt = rogues.length ? rogues[0].t : Infinity; S.rogue = null; S.rogueT = -1e9;
   S.star2 = S.pl.find(p => p.star) || null;
   S.lifeDirty = true;
+  S.visitor = null; S.visitT = 0; S.ix = S.iy = 0;
+  S.visitAt = Math.random() < visitorChance ? 300 + Math.random() * 9200 : Infinity;
   computeAcc();
   S.dt = S.dtNext;
 }
@@ -454,6 +520,7 @@ function computeAcc(){
     AX[i] += axi*ri; AY[i] += ayi*ri;
   }
   for (let i = 0; i < n; i++){ AX[i] += ix*RCV[i]; AY[i] += iy*RCV[i]; }
+  S.ix = ix; S.iy = iy;
   let dt = ETA * Math.sqrt(minT2);
   if (dt > cap) dt = cap;
   S.dtNext = dt < DT_MIN ? DT_MIN : dt > DT_MAX ? DT_MAX : dt;
@@ -509,13 +576,66 @@ function merge(i, j){
   removeSlot(sm);
 }
 
+function stepVisitor(dt){
+  const v = S.visitor, n = S.n;
+  let left = dt;
+  while (left > 0 && v.alive){
+    const r2 = v.x*v.x + v.y*v.y, r = Math.sqrt(r2), sp = Math.hypot(v.vx, v.vy);
+    if (r < STAR_R){
+      v.alive = false; v.fate = {kind:'star', t:S.t};
+      addEvent('star', v, '<b>The visitor</b> fell into the star', 0, 0, 0, 0);
+      return;
+    }
+    if (r > 30 && v.x*v.vx + v.y*v.vy > 0 && sp*sp / 2 - GM / r > 0){
+      v.alive = false;
+      addEvent('vleave', v, VISITOR_EXITS[Math.floor(Math.random() * VISITOR_EXITS.length)], v.x, v.y, 0, 0);
+      return;
+    }
+    const k0 = GM / (r2 * r);
+    let ax = -v.x*k0 + S.ix, ay = -v.y*k0 + S.iy, h = 0.04 / Math.sqrt(k0);
+    for (let i = 0; i < n; i++){
+      const dx = X[i] - v.x, dy = Y[i] - v.y, d2 = dx*dx + dy*dy + EPS2, d = Math.sqrt(d2);
+      if (d < CR[i] + 0.003){
+        v.alive = false; v.fate = {kind:'hit', t:S.t, by:S.pl[i].name};
+        addEvent('vhit', v, `<b>The visitor</b> struck ${S.pl[i].name} and was never seen again`, v.x, v.y, 0, 0);
+        return;
+      }
+      const k = GM * M[i] / (d2 * d);
+      ax += dx*k; ay += dy*k;
+      if (d2 < 0.36){ const hh = 0.2 * d / (sp + 1e-9); if (hh < h) h = hh; }
+    }
+    if (h > left) h = left;
+    if (h < 1e-5) h = 1e-5;
+    v.vx += ax*h; v.vy += ay*h; v.x += v.vx*h; v.y += v.vy*h;
+    left -= h;
+    if (S.rec){
+      const dx = v.x - v.lx, dy = v.y - v.ly;
+      if (dx*dx + dy*dy > S.trailD2){
+        v.lx = v.x; v.ly = v.y;
+        if (v.tn < TB){ v.tb[v.tn*2] = v.x; v.tb[v.tn*2+1] = v.y; v.tn++; } else v.gap = true;
+      }
+    }
+  }
+}
+
 function step(){
   if (S.t >= S.rogueAt){
-    S.rogueAt = Infinity;
-    const p = mkRun(rogue, S.n, S.rec);
+    const p = mkRun(rogues[S.rogueIdx++].body, S.n, S.rec);
+    S.rogueAt = S.rogueIdx < rogues.length ? rogues[S.rogueIdx].t : Infinity;
     S.pl[S.n++] = p; S.all.push(p); S.rogue = p; S.rogueT = S.t;
     addEvent('arrive', p, `<b>${p.name}</b>, a rogue star, is closing in`, 0, 0, 0, 0);
     computeAcc(); S.dt = S.dtNext;
+  }
+  if (S.t >= S.visitAt){
+    S.visitAt = Infinity;
+    // real interstellar objects arrive at roughly 26 km/s, about 5.5 AU a year
+    const b = rogueBody(0.5 + Math.random() * 3, 3 + Math.random() * 3, Math.random() * TAU, 'The visitor', 'visitor');
+    const p = {name:b.name, type:'visitor', color:b.color, glow:b.glow, trail:b.trail, m:0, alive:true, fate:null,
+      locked:true, star:false, visitor:true, stage:0, lost:[], absorbed:[], hz:0, aCnt:0,
+      x:b.x, y:b.y, vx:b.vx, vy:b.vy,
+      tb: S.rec ? new Float32Array(TB*2) : null, tn:0, lx:b.x, ly:b.y, px:b.x, py:b.y, gap:false, gapPrev:true};
+    S.all.push(p); S.visitor = p; S.visitT = S.t;
+    addEvent('visit', p, 'An <b>interstellar visitor</b> is passing through', 0, 0, 0, 0);
   }
   const n = S.n, dt = S.dt, h = dt * 0.5;
   for (let i = 0; i < n; i++){
@@ -560,6 +680,8 @@ function step(){
     }
   }
 
+  if (S.visitor && S.visitor.alive) stepVisitor(dt);
+
   let changed = false;
   if (S.col >= 0){ merge(S.col, S.colJ); computeAcc(); changed = true; }
   for (let i = S.n - 1; i >= 0; i--){
@@ -595,6 +717,8 @@ function simClose(){
 }
 
 const RESONANCES = [[2,1],[3,2],[3,1],[4,3],[5,3]];
+// Pairs that start exactly on a ratio settle a little wide of it (1 to 2.5% in testing), so the window leans that way.
+function inRhythm(ratio, target){ const d = ratio / target - 1; return d > -0.01 && d < 0.03; }
 function score(){
   const all = S.all, mine = all.filter(p => !p.locked), surv = mine.filter(p => p.alive), endT = Math.max(S.t, 1);
   const H = [], Mh = [], hzMul = sc.hzMul || 1;
@@ -616,7 +740,7 @@ function score(){
   for (let i = 0; i < per.length; i++) for (let j = i + 1; j < per.length; j++){
     const ratio = per[j].P / per[i].P;
     for (const [a, b] of RESONANCES){
-      if (Math.abs(ratio / (a / b) - 1) < 0.012){
+      if (inRhythm(ratio, a / b)){
         H.push([`${per[i].p.name} and ${per[j].p.name} keep a ${a}:${b} rhythm`, 150]); h += 150;
       }
     }
@@ -626,6 +750,7 @@ function score(){
     H.push(['Full house: nobody lost (+25%)', pts]); h += pts;
   }
   for (const p of all){
+    if (p.visitor) continue;
     for (const st of p.lost){ Mh.push([`Life on ${p.name} wiped out (${STAGES[st].name})`, 60 * st]); m += 60 * st; }
     const f = p.fate; if (!f) continue;
     const k = p.locked ? 2 : 1, tag = p.locked ? ' (×2)' : '';
@@ -700,7 +825,12 @@ function flushTrails(){
 let effects = [], starFlash = 0, curRate = 0;
 
 function drawPlanet(x, y, p, r, label){
-  if (TYPES[p.type].star){
+  if (p.type === 'visitor'){            // a pale tumbling sliver
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, TAU); ctx.fillStyle = 'rgba(190,240,255,.16)'; ctx.fill();
+    ctx.save(); ctx.translate(x, y); ctx.rotate(performance.now() / 300);
+    ctx.beginPath(); ctx.ellipse(0, 0, 6.5, 1.7, 0, 0, TAU); ctx.fillStyle = '#e6f9ff'; ctx.fill();
+    ctx.restore();
+  } else if (TYPES[p.type].star){
     const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
     g.addColorStop(0, '#fff'); g.addColorStop(0.3, p.color); g.addColorStop(0.55, p.glow); g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 3, 0, TAU); ctx.fill();
@@ -782,7 +912,20 @@ function draw(now){
 
   if (mode === 'build'){
     const bodies = fixed.concat(design);
-    if (rogue) drawGhost(rogue, false);
+    const anchor = ringAnchor();
+    if (anchor){
+      const placing = drag ? Math.hypot(drag.pl.x, drag.pl.y) : -1;
+      ctx.font = '600 10px system-ui,sans-serif'; ctx.textAlign = 'center';
+      for (const g of guideRings(anchor)){
+        const on = Math.abs(placing - g.r) < 1e-6;
+        ctx.globalAlpha = on ? 1 : 0.5; ctx.strokeStyle = ctx.fillStyle = anchor.color;
+        ctx.lineWidth = on ? 1.8 : 1; ctx.setLineDash(on ? [] : [5, 6]);
+        ctx.beginPath(); ctx.arc(cx, cy, g.r * scale, 0, TAU); ctx.stroke();
+        ctx.fillText(g.label, cx + g.r * scale * 0.707 + 9, cy - g.r * scale * 0.707 - 3);
+      }
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+    for (const r of rogues) drawGhost(r.body, false);
     for (const p of bodies) drawGhost(p, p === selected || p.locked);
     for (const p of bodies){
       const x = sx(p.x), y = sy(p.y), r = TYPES[p.type].px;
@@ -814,6 +957,8 @@ function draw(now){
       const lab = labels || mode === 'done';
       drawPlanet(x, y, p, r, lab && p.stage > 0 ? `${p.name} ${STAGES[p.stage].icon}` : lab);
     }
+    const vis = S.visitor;
+    if (vis && vis.alive) drawPlanet(sx(vis.x), sy(vis.y), vis, 3, labels || mode === 'done');
     if (mode === 'run' && now < slowUntil && S.encA && S.encB && S.encA.alive && S.encB.alive){
       const i = S.pl.indexOf(S.encA), j = S.pl.indexOf(S.encB);
       if (i >= 0 && j >= 0){
@@ -937,6 +1082,7 @@ function eventSound(e){
   else if (k === 'star'){ noise(0.7, 0.22, 2400, 'highpass'); tone(220, {to:55, dur:0.6, gain:0.25}); }
   else if (k === 'life'){ tone(659, {dur:0.5, gain:0.11}); tone(988, {dur:0.6, gain:0.11, at:0.12}); }
   else if (k === 'extinct'){ tone(440, {dur:0.5, gain:0.12}); tone(311, {dur:0.8, gain:0.12, at:0.16}); }
+  else if (k === 'visit'){ tone(1568, {dur:2.4, attack:0.6, gain:0.07}); tone(2349, {dur:2.8, attack:0.9, gain:0.05, at:0.3}); }
   else if (k === 'arrive') tone(55, {wave:'sawtooth', lp:220, dur:3, attack:1.2, gain:0.3});
 }
 function finaleSound(){                  // the survivors, played together as the system's chord
@@ -969,7 +1115,7 @@ function startRun(){
 }
 function toast(e){
   const el = document.createElement('div');
-  el.className = 'toast' + (e.kind === 'life' ? ' good' : '');
+  el.className = 'toast' + (e.kind === 'life' ? ' good' : e.p && e.p.visitor ? ' cool' : '');
   el.innerHTML = `Year ${fmt(e.t)} · ${e.text}`;
   const box = $('toasts');
   box.prepend(el);
@@ -990,12 +1136,22 @@ function advance(dtR, now){
   if (S.rogue && S.rogue.alive && mul !== Infinity){
     const i = S.pl.indexOf(S.rogue);
     if (i >= 0 && RR[i] < 12){ rate = Math.min(rate, 2.5); rogueNear = true; }
+    else if (i >= 0 && RR[i] < 45) rate = Math.min(rate, 12);      // on approach: don't let a fast frame skip the pass
+  }
+  let visitNear = false;
+  if (S.visitor && S.visitor.alive && mul !== Infinity && S.t - S.visitT < 40){
+    const d = Math.hypot(S.visitor.x, S.visitor.y);
+    if (d < 9){ rate = Math.min(rate, 0.8); visitNear = true; }     // it crosses in a couple of years, so slow right down
+    else if (d < 45) rate = Math.min(rate, 5);
   }
   const tBefore = S.t, target = S.t + rate * dtR, t0 = performance.now();
   const canSlow = mul !== Infinity && slowLeft > 0 && now > coolUntil && now >= slowUntil && rate > 3;
   let k = 0;
   while (S.t < target && S.t < T_END && S.live > 0){
     step();
+    // a guest has just arrived: end this frame here so the slower pacing above takes over before it is gone
+    const guest = S.visitor && S.visitor.alive && !S.visitor.seen ? S.visitor : S.rogue && S.rogue.alive && !S.rogue.seen ? S.rogue : null;
+    if (guest){ guest.seen = true; if (mul !== Infinity) break; }
     if (S.encNow && canSlow && S.t > 2){ slowUntil = now + 1500; slowLeft--; wasSlow = true; break; }
     if ((++k & 63) === 0 && performance.now() - t0 > 11) break;
   }
@@ -1021,7 +1177,7 @@ function advance(dtR, now){
   flushTrails();
   const yr = Math.min(T_END, S.t);
   $('year').textContent = 'Year ' + fmt(Math.floor(yr));
-  $('sub').textContent = now < slowUntil ? 'close encounter' : rogueNear ? 'a rogue star is passing through' : `${S.live} of ${S.placed} still in orbit`;
+  $('sub').textContent = now < slowUntil ? 'close encounter' : rogueNear ? 'a rogue star is passing through' : visitNear ? 'an interstellar visitor is passing through' : `${S.live} of ${S.placed} still in orbit`;
   $('bar').firstElementChild.style.width = (yr / T_END * 100) + '%';
   if (S.t >= T_END || S.live === 0) endAt = now + (S.live === 0 ? 1200 : 500);
 }
@@ -1063,6 +1219,7 @@ function showVerdict(res, newH, newM){
   const rows = list => list.length ? list.map(([l, v]) => `<div class="row"><span class="l">${l}</span><span class="r">+${fmt(v)}</span></div>`).join('') : '<div class="row"><span class="l" style="color:var(--dim)">Nothing this time</span></div>';
   const fate = p => {
     const f = p.fate;
+    if (p.visitor) return `<span style="color:#9fe8ff">${p.alive ? ((p.vx*p.vx + p.vy*p.vy) / 2 - GM / Math.hypot(p.x, p.y) < 0 ? 'captured into orbit' : 'still passing through') : !f ? 'passed through' : f.kind === 'hit' ? 'struck ' + f.by : 'fell into ' + (f.by || 'the star')}</span>`;
     if (p.star) return `<span style="color:var(--dim)">${p.alive ? 'still circling' : 'passed through'}</span>`;
     if (!f){
       const T = TYPES[p.type], bits = [p.locked ? 'still here (no points)' : 'survived'];
@@ -1197,7 +1354,7 @@ function describe(p){
     if (el.peri >= HZ_IN && el.apo <= HZ_OUT) hz = ' · <span class="ok">habitable</span>';
     else if (el.peri < HZ_OUT && el.apo > HZ_IN) hz = ' · <span class="ok">crosses habitable zone</span>';
   }
-  return `<b>${p.name}</b> · ${TYPES[p.type].label}${p.locked ? ' · locked' : ''} · ${el.r.toFixed(2)} AU<br>${orbit}${hz}`;
+  return `<b>${p.name}</b> · ${TYPES[p.type].label}${p.locked ? ' · locked' : ''} · ${el.r.toFixed(2)} AU<br>${orbit}${hz}${rhythmWith(p)}`;
 }
 function updateBuildUI(){
   if (mode !== 'build') return;
@@ -1225,7 +1382,7 @@ $('types').innerHTML = Object.entries(TYPES).filter(([k, T]) => !T.star).map(([k
   `<button class="type" data-type="${k}"><span class="dot" style="width:${T.px*2}px;height:${T.px*2}px;background:hsl(${T.hue} ${T.sat}% ${T.lum}%)"></span>${T.label}<small>mass ${T.cost} · ${T.pts} pts</small></button>`).join('');
 $('types').addEventListener('click', e => {
   const b = e.target.closest('.type'); if (!b) return;
-  curType = b.dataset.type; selected = null; updateBuildUI();
+  curType = b.dataset.type; updateBuildUI();      // keep the selection so its rhythm rings stay up
 });
 $('removeBtn').onclick = () => { design = design.filter(p => p !== selected); saveDesign(); select(null); };
 $('circBtn').onclick = () => { if (!selected) return; [selected.vx, selected.vy] = circVel(selected.x, selected.y); saveDesign(); updateBuildUI(); };
@@ -1277,10 +1434,11 @@ cv.addEventListener('pointerdown', e => {
   const T = TYPES[curType];
   if (design.length >= MAX_PLANETS){ flash(`That's the limit: ${MAX_PLANETS} planets.`); return; }
   if (T.cost > sc.budget - budgetUsed()){ flash(`Not enough mass budget for a ${T.label.toLowerCase()}.`); return; }
-  const [x, y] = clampField(wx, wy), [vx, vy] = circVel(x, y);
+  const anchor = selected && !selected.locked ? selected : null;
+  const [x, y] = snapToRing(...clampField(wx, wy), anchor), [vx, vy] = circVel(x, y);
   const pl = tint({type:curType, name:pickName(curType), hue:Math.round(Math.random()*28 - 14), x, y, vx, vy});
   design.push(pl);
-  drag = {kind:'place', pl, id:e.pointerId};
+  drag = {kind:'place', pl, id:e.pointerId, anchor};
   select(pl);
 });
 cv.addEventListener('pointermove', e => {
@@ -1288,7 +1446,7 @@ cv.addEventListener('pointermove', e => {
   const p = evPos(e), pl = drag.pl;
   if (pl.locked) return;
   if (drag.kind === 'place'){
-    [pl.x, pl.y] = clampField((p.x - cx) / scale, (p.y - cy) / scale);
+    [pl.x, pl.y] = snapToRing(...clampField((p.x - cx) / scale, (p.y - cy) / scale), drag.anchor);
     [pl.vx, pl.vy] = circVel(pl.x, pl.y);
   } else {
     if (drag.kind === 'tap' && Math.hypot(p.x - drag.sx, p.y - drag.sy) > 10) drag.kind = 'aim';
@@ -1324,6 +1482,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) naviga
 window.__stableish = {
   S, TYPES, get design(){ return design; }, set design(d){ design = d.map(tint); updateBuildUI(); },
   circVel, setScenario, dailyScenario,
+  set visitorChance(v){ visitorChance = v; },
   headless(){ const t0 = performance.now(); simInit(fixed.concat(design), false); while (S.t < T_END && S.live > 0) step(); simClose(); const r = score(); r.ms = Math.round(performance.now() - t0); r.steps = S.steps; r.events = S.events.map(e => [Math.round(e.t), e.text.replace(/<[^>]+>/g, '')]); return r; },
 };
 </script>
