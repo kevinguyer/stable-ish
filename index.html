@@ -112,7 +112,9 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)
 #vbtns button{flex:1}
 
 #help{position:fixed;inset:0;background:rgba(4,6,14,.78);display:flex;align-items:center;justify-content:center;padding:18px}
-#help .card{background:#111831;border:1px solid var(--line);border-radius:18px;padding:18px;max-width:400px}
+#help .card{background:#111831;border:1px solid var(--line);border-radius:18px;padding:18px;max-width:400px;max-height:92dvh;overflow:auto;scrollbar-width:thin;scrollbar-color:#3a4468 transparent}
+#help .about{border-top:1px solid var(--line);padding-top:10px;margin-top:12px;font-size:13px;color:var(--dim)}
+#help .about a{color:var(--star);font-weight:600}
 #help h2{margin:0 0 8px;font-size:20px}
 #help p{margin:8px 0;color:#cfd5e8;font-size:14px}
 #help b{color:var(--text)}
@@ -190,6 +192,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)
     <p>A rocky or ocean world that <b>stays</b> in the green zone grows life: microbes, plants, animals, cities, then radio signals. Short trips outside are survivable; leaving for long wipes it out.</p>
     <p>Bigger planets score more and bully their neighbours.</p>
     <p>Every planet plays a note set by its orbit. Orbits in a simple rhythm, like 2:1 or 3:2, sound in tune.</p>
+    <p class="about"><b>About.</b> Stable-ish is a game created by Kevin Guyer. <a href="https://kevinguyer.com" target="_blank" rel="noopener">kevinguyer.com</a></p>
     <button class="primary" id="helpClose">Got it</button>
   </div>
 </div>
